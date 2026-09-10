@@ -16,15 +16,10 @@ import os
 import re
 import subprocess
 import tempfile
+import requests
 import streamlit as st
 from dataclasses import dataclass
 from typing import List
-
-try:
-    import anthropic
-    ANTHROPIC_AVAILABLE = True
-except ImportError:
-    ANTHROPIC_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------
@@ -267,12 +262,11 @@ def run_iverilog_check(code: str) -> dict:
     return result
 
 
-def run_claude_analysis(code: str, api_key: str) -> str:
-    """Sends the code to Claude for a deeper, context-aware review that
-    can catch bugs simple rules miss. Requires an Anthropic API key -
-    this step costs a small amount per use (not free), unlike the two
-    checks above."""
-    client = anthropic.Anthropic(api_key=api_key)
+def run_groq_analysis(code: str, api_key: str) -> str:
+    """Sends the code to Groq's free API (open-source Llama models) for a
+    deeper, context-aware review that can catch bugs simple rules miss.
+    Groq offers a genuinely free tier - no credit card needed, just a
+    free account at console.groq.com."""
     prompt = (
         "You are a senior chip design / Verilog verification engineer. "
         "Review the following Verilog code for hidden logic bugs, timing "
@@ -281,12 +275,22 @@ def run_claude_analysis(code: str, api_key: str) -> str:
         "review focused and practical.\n\n"
         f"```verilog\n{code}\n```"
     )
-    message = client.messages.create(
-        model="claude-sonnet-5",
-        max_tokens=1500,
-        messages=[{"role": "user", "content": prompt}],
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "llama-3.3-70b-versatile",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1500,
+        },
+        timeout=30,
     )
-    return "".join(block.text for block in message.content if hasattr(block, "text"))
+    response.raise_for_status()
+    data = response.json()
+    return data["choices"][0]["message"]["content"]
 
 
 def analyze_verilog(code: str) -> List[Issue]:
@@ -310,9 +314,9 @@ st.set_page_config(page_title="Verilog Bug Finder (Free)", page_icon="🐛", lay
 
 st.title("🐛 Verilog Bug Finder — Free MVP")
 st.caption(
-    "100% free, runs locally — no paid API key needed. "
+    "100% free — no paid API key needed anywhere. "
     "Paste your Verilog code and get an instant rule-based review for logic bugs, "
-    "timing/simulation risks, and style issues."
+    "timing/simulation risks, and style issues, plus an optional free AI deep review."
 )
 
 with st.expander("ℹ️ What does this check for?"):
@@ -409,40 +413,34 @@ with col2:
 
 st.divider()
 
-with st.expander("🧠 Optional: Deeper AI review with Claude (uses a paid API key)"):
+with st.expander("🧠 Optional: Deeper AI review with Groq (free, no credit card)"):
     st.caption(
-        "This step is optional and costs a small amount per use, unlike the checks "
-        "above which are completely free. You need your own Anthropic API key from "
-        "console.anthropic.com."
+        "This step is completely free. Groq gives free API access to open-source "
+        "AI models (Llama). Get your free key at console.groq.com - no credit "
+        "card required."
     )
-    if not ANTHROPIC_AVAILABLE:
-        st.warning(
-            "The 'anthropic' package isn't installed on this server. Add a line "
-            "'anthropic' to your requirements.txt in GitHub and redeploy to enable this."
-        )
-    else:
-        api_key_input = st.text_input(
-            "Your Anthropic API key", type="password",
-            help="Get one at console.anthropic.com. It is only used for this request "
-                 "and is not stored anywhere.",
-        )
-        ai_btn = st.button("🧠 Run Claude AI Review")
-        if ai_btn:
-            if not code_input.strip():
-                st.warning("Please paste some Verilog code above first.")
-            elif not api_key_input.strip():
-                st.warning("Please enter your Anthropic API key.")
-            else:
-                with st.spinner("Asking Claude for a deeper review..."):
-                    try:
-                        review = run_claude_analysis(code_input, api_key_input.strip())
-                        st.markdown(review)
-                    except Exception as e:
-                        st.error(f"Claude API request failed: {e}")
+    api_key_input = st.text_input(
+        "Your Groq API key", type="password",
+        help="Get one for free at console.groq.com. It is only used for this "
+             "request and is not stored anywhere.",
+    )
+    ai_btn = st.button("🧠 Run AI Review")
+    if ai_btn:
+        if not code_input.strip():
+            st.warning("Please paste some Verilog code above first.")
+        elif not api_key_input.strip():
+            st.warning("Please enter your Groq API key.")
+        else:
+            with st.spinner("Asking AI for a deeper review..."):
+                try:
+                    review = run_groq_analysis(code_input, api_key_input.strip())
+                    st.markdown(review)
+                except Exception as e:
+                    st.error(f"AI request failed: {e}")
 
 st.caption(
     "This MVP combines three layers: free offline pattern-matching rules, a free "
-    "real compiler check (Icarus Verilog), and an optional paid Claude AI deep "
-    "review. It's still a first-pass tool, not a replacement for full simulation, "
-    "formal verification, or static timing analysis (STA)."
+    "real compiler check (Icarus Verilog), and an optional free AI deep review "
+    "powered by Groq. It's still a first-pass tool, not a replacement for full "
+    "simulation, formal verification, or static timing analysis (STA)."
 )
